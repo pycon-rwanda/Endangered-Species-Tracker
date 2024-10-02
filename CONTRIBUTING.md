@@ -1,9 +1,4 @@
 
----
-
-### **CONTRIBUTING.md**
-
-```markdown
 # Contributing to Endangered Species Tracker
 
 Thank you for your interest in contributing to the Endangered Species Tracker! By contributing, you're helping raise awareness about endangered species and creating tools to spread knowledge and inspire conservation efforts.
