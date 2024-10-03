@@ -92,7 +92,7 @@ Habitat: Savannas, grasslands, forests
 ```
 
 ## Contributing
-Contributions are welcome! Please refer to the [CONTRIBUTING.md](CONTRIBUTING.md) file for guidelines on how to get involved.
+Contributions are welcome! Please refer to the [CONTRIBUTING.md](https://github.com/pycon-rwanda/Endangered-Species-Tracker/blob/main/CONTRIBUTING.md) file for guidelines on how to get involved.
 
 ## API Reference
 This project uses the IUCN Red List API. To retrieve species data, make a request as shown below:
