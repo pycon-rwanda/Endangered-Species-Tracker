@@ -1,13 +1,18 @@
 import requests
 import gradio as gr
+from decouple import config
+
+# Load API key from environment variables
+IUCN_API_KEY = config("IUCN_API_KEY")
 
 # IUCN Red List API endpoint
 IUCN_API_URL = "https://apiv3.iucnredlist.org/api/v3/species/"
 
+
 # Function to fetch species data from the IUCN API
 def fetch_species_data(species_name, conservation_status=None):
     try:
-        response = requests.get(f"{IUCN_API_URL}{species_name}?token=YOUR_API_TOKEN")
+        response = requests.get(f"{IUCN_API_URL}{species_name}?token={IUCN_API_KEY}")
         if response.status_code == 200:
             data = response.json()
             if 'result' in data and len(data['result']) > 0:
