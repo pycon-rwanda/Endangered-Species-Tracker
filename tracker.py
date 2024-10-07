@@ -58,9 +58,9 @@ with gr.Blocks() as demo:
     )
     
     submit_btn = gr.Button("Submit")
-    output = gr.Output()
+    output = gr.Markdown()
 
     submit_btn.click(interface, inputs=[species_input, conservation_status_filter], outputs=output)
 
 # Launch the Gradio app
-demo.launch()
+demo.launch(share=True)
