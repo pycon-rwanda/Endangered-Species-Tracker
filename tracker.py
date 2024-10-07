@@ -8,7 +8,6 @@ IUCN_API_KEY = config("IUCN_API_KEY")
 # IUCN Red List API endpoint
 IUCN_API_URL = "https://apiv3.iucnredlist.org/api/v3/species/"
 
-
 # Function to fetch species data from the IUCN API
 def fetch_species_data(species_name, conservation_status=None):
     try:
@@ -28,10 +27,8 @@ def fetch_species_data(species_name, conservation_status=None):
     except Exception as e:
         return f"An error occurred: {str(e)}", "", "", ""
 
-
 # Function to filter species by conservation status
 def filter_species_by_status(conservation_status):
-    # Fetch all species (this should ideally be replaced with a more efficient method)
     all_species = ["Puma concolor", "Panthera leo", "Elephas maximus"]  # Replace with actual species list
     filtered_species = []
     for species in all_species:
@@ -40,13 +37,11 @@ def filter_species_by_status(conservation_status):
             filtered_species.append((scientific_name, status, population_trend, habitat))
     return filtered_species
 
-
 # Gradio interface function
 def interface(species_name, conservation_status):
     if species_name:
         species_data = fetch_species_data(species_name)
         if isinstance(species_data, tuple):
-            # Format the output as a Markdown string
             formatted_output = f"**Scientific Name:** {species_data[0]}\n\n**Conservation Status:** {species_data[1]}\n\n**Population Trend:** {species_data[2]}\n\n**Habitat:** {species_data[3]}"
             return formatted_output
         else:
@@ -55,12 +50,11 @@ def interface(species_name, conservation_status):
         species_list = filter_species_by_status(conservation_status)
         if species_list:
             formatted_list = "\n\n".join([
-                                             f"**Scientific Name:** {s[0]}\n**Conservation Status:** {s[1]}\n**Population Trend:** {s[2]}\n**Habitat:** {s[3]}"
-                                             for s in species_list])
+                f"**Scientific Name:** {s[0]}\n**Conservation Status:** {s[1]}\n**Population Trend:** {s[2]}\n**Habitat:** {s[3]}"
+                for s in species_list])
             return formatted_list
         else:
             return "No species found with the selected conservation status."
-
 
 # Create Gradio interface
 with gr.Blocks() as demo:
@@ -81,3 +75,4 @@ with gr.Blocks() as demo:
 
 # Launch the Gradio app
 demo.launch(share=True)
+
