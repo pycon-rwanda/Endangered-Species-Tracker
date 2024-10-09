@@ -1,6 +1,8 @@
 import requests
 import gradio as gr
 from decouple import config
+import plotly.graph_objects as go
+from functools import lru_cache
 
 # Load API key from environment variables
 IUCN_API_KEY = config("IUCN_API_KEY")
@@ -8,71 +10,245 @@ IUCN_API_KEY = config("IUCN_API_KEY")
 # IUCN Red List API endpoint
 IUCN_API_URL = "https://apiv3.iucnredlist.org/api/v3/species/"
 
-# Function to fetch species data from the IUCN API
-def fetch_species_data(species_name, conservation_status=None):
+
+@lru_cache(maxsize=100)
+def fetch_species_data(species_name):
+    """
+    Fetches data for a given species name from the IUCN Red List API using the cached LRU decorator.
+
+    Args:
+        species_name (str): The scientific name of the species to fetch data for.
+
+    Returns:
+        tuple: A tuple containing the species name, conservation status, population trend, and habitat.
+    """
     try:
         response = requests.get(f"{IUCN_API_URL}{species_name}?token={IUCN_API_KEY}")
         if response.status_code == 200:
             data = response.json()
-            if 'result' in data and len(data['result']) > 0:
-                species_info = data['result'][0]
+            if "result" in data and len(data["result"]) > 0:
+                species_info = data["result"][0]
                 conservation_status = species_info.get("category", "Not Available")
-                population_trend = species_info.get("population", "Not Available")
+                population_trend = species_info.get("population_trend", "Not Available")
                 habitat = species_info.get("habitat", "Not Available")
-                return (species_info['scientific_name'], conservation_status, population_trend, habitat)
+                return (
+                    species_info["scientific_name"],
+                    conservation_status,
+                    population_trend,
+                    habitat,
+                )
             else:
-                return "Species not found.", "", "", ""
+                return None
         else:
-            return "Error fetching data from API.", "", "", ""
+            return None
     except Exception as e:
-        return f"An error occurred: {str(e)}", "", "", ""
+        return None
 
-# Function to filter species by conservation status
-def filter_species_by_status(conservation_status):
-    all_species = ["Puma concolor", "Panthera leo", "Elephas maximus"]  # Replace with actual species list
+
+def filter_species_by_status(conservation_status, page=1, per_page=10):
+    """
+    Filters a list of species by their conservation status and returns a paginated response.
+
+    Args:
+        conservation_status (str, optional): The conservation status to filter by. Defaults to None.
+        page (int, optional): The page number to retrieve. Defaults to 1.
+        per_page (int, optional): The number of items per page. Defaults to 10.
+
+    Returns:
+        tuple: A tuple containing the filtered list of species and the total number of pages.
+    """
+    all_species = [
+        "Puma concolor",
+        "Panthera leo",
+        "Elephas maximus",
+        "Gorilla beringei",
+        "Panthera tigris",
+        "Rhinoceros unicornis",
+        "Ailuropoda melanoleuca",
+        "Balaenoptera musculus",
+        "Diceros bicornis",
+        "Panthera onca",
+    ]
     filtered_species = []
-    for species in all_species:
-        scientific_name, status, population_trend, habitat = fetch_species_data(species)
-        if conservation_status is None or status == conservation_status:
-            filtered_species.append((scientific_name, status, population_trend, habitat))
-    return filtered_species
+    start_index = (page - 1) * per_page
+    end_index = start_index + per_page
 
-# Gradio interface function
-def interface(species_name, conservation_status):
+    for species in all_species[start_index:end_index]:
+        species_data = fetch_species_data(species)
+        if species_data:
+            if conservation_status is None or species_data[1] == conservation_status:
+                filtered_species.append(species_data)
+
+    total_pages = -(-len(all_species) // per_page)
+    return filtered_species, total_pages
+
+
+def create_conservation_status_chart(species_list):
+    """
+    Creates a pie chart showing the distribution of conservation statuses from a list of species.
+
+    Args:
+        species_list (list): A list of tuples containing species information, where the second element is the conservation status.
+
+    Returns:
+        plotly.graph_objects.Figure: A pie chart showing the distribution of conservation statuses.
+    """
+    status_counts = {}
+    for species in species_list:
+        status = species[1]
+        status_counts[status] = status_counts.get(status, 0) + 1
+
+    fig = go.Figure(
+        data=[
+            go.Pie(
+                labels=list(status_counts.keys()), values=list(status_counts.values())
+            )
+        ]
+    )
+    fig.update_layout(title_text="Conservation Status Distribution")
+    return fig
+
+
+def interface(species_name, conservation_status, page):
+    """
+    Interface function for the Gradio demo.
+
+    This function takes in a species name and conservation status, and returns a formatted output string, a pie chart, and
+    visibility updates for the page navigation buttons.
+
+    If the species name is provided, the function fetches the corresponding species data and formats it into a string.
+    If the species name is not provided, the function filters the list of species by the selected conservation status and
+    returns a formatted list of the filtered species.
+
+    Args:
+        species_name (str): The scientific name of the species to fetch data for.
+        conservation_status (str): The conservation status to filter by.
+        page (int): The current page number.
+
+    Returns:
+        formatted_output (str): A formatted string containing the species data or the filtered list of species.
+        chart (plotly.graph_objects.Figure): A pie chart showing the distribution of conservation statuses.
+        update_prev (gr.Interface.update): An update function for the previous page button.
+        update_next (gr.Interface.update): An update function for the next page button.
+    """
     if species_name:
         species_data = fetch_species_data(species_name)
-        if isinstance(species_data, tuple):
+        if species_data:
             formatted_output = f"**Scientific Name:** {species_data[0]}\n\n**Conservation Status:** {species_data[1]}\n\n**Population Trend:** {species_data[2]}\n\n**Habitat:** {species_data[3]}"
-            return formatted_output
+            chart = create_conservation_status_chart([species_data])
+            return (
+                formatted_output,
+                chart,
+                gr.update(visible=False),
+                gr.update(visible=False),
+            )
         else:
-            return species_data  # In case of an error message (string)
+            return (
+                "Species not found or error fetching data.",
+                None,
+                gr.update(visible=False),
+                gr.update(visible=False),
+            )
     else:
-        species_list = filter_species_by_status(conservation_status)
+        species_list, total_pages = filter_species_by_status(conservation_status, page)
         if species_list:
-            formatted_list = "\n\n".join([
-                f"**Scientific Name:** {s[0]}\n**Conservation Status:** {s[1]}\n**Population Trend:** {s[2]}\n**Habitat:** {s[3]}"
-                for s in species_list])
-            return formatted_list
+            formatted_list = "\n\n".join(
+                [
+                    f"**Scientific Name:** {s[0]}\n**Conservation Status:** {s[1]}\n**Population Trend:** {s[2]}\n**Habitat:** {s[3]}"
+                    for s in species_list
+                ]
+            )
+            chart = create_conservation_status_chart(species_list)
+            return (
+                formatted_list,
+                chart,
+                gr.update(visible=True),
+                gr.update(visible=True, maximum=total_pages),
+            )
         else:
-            return "No species found with the selected conservation status."
+            return (
+                "No species found with the selected conservation status.",
+                None,
+                gr.update(visible=False),
+                gr.update(visible=False),
+            )
 
-# Create Gradio interface
+
+def change_page(direction, current_page):
+    """
+    Changes the current page by the given direction (positive for next page, negative for previous page),
+    ensuring the page number is always at least 1.
+
+    Args:
+        direction (int): The direction to change the page by.
+        current_page (int): The current page number.
+
+    Returns:
+        int: The new page number.
+    """
+    return max(1, current_page + direction)
+
+
 with gr.Blocks() as demo:
     gr.Markdown("# Endangered Species Tracker")
     gr.Markdown("## Search for Endangered Species and Their Conservation Status")
 
-    species_input = gr.Textbox(label="Enter Species Name:")
-    conservation_status_filter = gr.Radio(
-        label="Filter by Conservation Status:",
-        choices=["Vulnerable", "Endangered", "Critically Endangered", "Least Concern", "Not Available"],
-        value=None
-    )
+    with gr.Row():
+        with gr.Column(scale=2):
+            species_input = gr.Textbox(label="Enter Species Name:")
+        with gr.Column(scale=1):
+            conservation_status_filter = gr.Radio(
+                label="Filter by Conservation Status:",
+                choices=[
+                    "Vulnerable",
+                    "Endangered",
+                    "Critically Endangered",
+                    "Least Concern",
+                    "Not Available",
+                    None,
+                ],
+                value=None,
+            )
 
     submit_btn = gr.Button("Submit")
     output = gr.Markdown()
+    chart = gr.Plot()
 
-    submit_btn.click(interface, inputs=[species_input, conservation_status_filter], outputs=output)
+    with gr.Row():
+        prev_btn = gr.Button("Previous Page", visible=False)
+        page_number = gr.Number(value=1, label="Page", visible=False)
+        next_btn = gr.Button("Next Page", visible=False)
 
-# Launch the Gradio app
+    submit_btn.click(
+        interface,
+        inputs=[species_input, conservation_status_filter, page_number],
+        outputs=[output, chart, prev_btn, next_btn],
+    )
+
+    prev_btn.click(
+        change_page,
+        inputs=[gr.Number(value=-1, visible=False), page_number],
+        outputs=page_number,
+    ).then(
+        interface,
+        inputs=[species_input, conservation_status_filter, page_number],
+        outputs=[output, chart, prev_btn, next_btn],
+    )
+
+    next_btn.click(
+        change_page,
+        inputs=[gr.Number(value=1, visible=False), page_number],
+        outputs=page_number,
+    ).then(
+        interface,
+        inputs=[species_input, conservation_status_filter, page_number],
+        outputs=[output, chart, prev_btn, next_btn],
+    )
+
+    page_number.change(
+        interface,
+        inputs=[species_input, conservation_status_filter, page_number],
+        outputs=[output, chart, prev_btn, next_btn],
+    )
+
 demo.launch(share=True)
-
