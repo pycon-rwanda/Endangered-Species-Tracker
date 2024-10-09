@@ -2,192 +2,245 @@ import requests
 import gradio as gr
 from decouple import config
 import plotly.graph_objects as go
+import plotly.express as px
 from functools import lru_cache
+import pandas as pd
+from ratelimit import limits, sleep_and_retry
+import logging
+import time
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Load API key from environment variables
 IUCN_API_KEY = config("IUCN_API_KEY")
 
 # IUCN Red List API endpoint
-IUCN_API_URL = "https://apiv3.iucnredlist.org/api/v3/species/"
+IUCN_API_URL = "https://apiv3.iucnredlist.org/api/v3/"
 
-
-@lru_cache(maxsize=100)
-def fetch_species_data(species_name):
+# Rate limiting: 10 calls per second
+@sleep_and_retry
+@limits(calls=10, period=1)  # 10 calls per second
+@lru_cache(maxsize=1000)  # Cache up to 1000 calls
+def api_call(endpoint, params=None):
     """
-    Fetches data for a given species name from the IUCN Red List API using the cached LRU decorator.
+    Make an API call to the IUCN Red List API with rate limiting and caching.
 
-    Args:
-        species_name (str): The scientific name of the species to fetch data for.
-
-    Returns:
-        tuple: A tuple containing the species name, conservation status, population trend, and habitat.
+    :param endpoint: The API endpoint to call
+    :param params: Optional parameters to pass in the query string
+    :return: The JSON response from the API, or None if the call failed
     """
     try:
-        response = requests.get(f"{IUCN_API_URL}{species_name}?token={IUCN_API_KEY}")
-        if response.status_code == 200:
-            data = response.json()
-            if "result" in data and len(data["result"]) > 0:
-                species_info = data["result"][0]
-                conservation_status = species_info.get("category", "Not Available")
-                population_trend = species_info.get("population_trend", "Not Available")
-                habitat = species_info.get("habitat", "Not Available")
-                return (
-                    species_info["scientific_name"],
-                    conservation_status,
-                    population_trend,
-                    habitat,
-                )
-            else:
-                return None
-        else:
-            return None
-    except Exception as e:
+        url = f"{IUCN_API_URL}{endpoint}"
+        params = params or {}
+        params['token'] = IUCN_API_KEY
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        logger.error(f"API call failed: {e}")
         return None
 
 
+def fetch_species_list(page=0):
+    """
+    Fetch a list of species from the IUCN Red List API.
+
+    The IUCN Red List API returns a list of species in the following format:
+
+    {
+        "result": [
+            {
+                "scientific_name": "<scientific name>",
+                "category": "<conservation status>",
+                "population_trend": "<population trend>",
+                "habitat": "<habitat>",
+                "threats": "<threats>",
+                "conservationmeasures": "<conservation measures>",
+            },
+            ...
+        ]
+    }
+
+    :param page: The page number to fetch (0-indexed)
+    :return: A list of species dictionaries
+    """
+    endpoint = "species/page"
+    params = {"page": page}
+    data = api_call(endpoint, params)
+    return data['result'] if data else []
+
+def fetch_species_data(species_name):
+    """
+    Fetch detailed data for a given species.
+
+    :param species_name: The scientific name of the species to fetch data for
+    :return: A dictionary containing the species data
+    """
+    # Fetch the species data
+    species_endpoint = f"species/{species_name}"
+    species_data = api_call(species_endpoint)
+
+    # If the species data is not found, return None
+    if not species_data or 'result' not in species_data or len(species_data['result']) == 0:
+        return None
+
+    species_info = species_data['result'][0]
+
+    # Fetch additional data
+    threats_endpoint = f"species/narrative/{species_name}/threats"
+    threats_data = api_call(threats_endpoint)
+
+    conservation_endpoint = f"species/narrative/{species_name}/conservationmeasures"
+    conservation_data = api_call(conservation_endpoint)
+
+    # Return the species data in a dictionary
+    return {
+        'scientific_name': species_info['scientific_name'],
+        'common_name': species_info.get('main_common_name', 'Not Available'),
+        'category': species_info.get('category', 'Not Available'),
+        'population_trend': species_info.get('population_trend', 'Not Available'),
+        'habitat': species_info.get('habitat', 'Not Available'),
+        # Fetch the threats data if available
+        'threats': threats_data['result'][0]['threats'] if threats_data and threats_data['result'] else 'Not Available',
+        # Fetch the conservation measures data if available
+        'conservation_measures': conservation_data['result'][0]['conservationmeasures'] if conservation_data and conservation_data['result'] else 'Not Available'
+    }
+
 def filter_species_by_status(conservation_status, page=1, per_page=10):
     """
-    Filters a list of species by their conservation status and returns a paginated response.
+    Filter species by conservation status.
 
     Args:
-        conservation_status (str, optional): The conservation status to filter by. Defaults to None.
-        page (int, optional): The page number to retrieve. Defaults to 1.
-        per_page (int, optional): The number of items per page. Defaults to 10.
+        conservation_status (str): The conservation status to filter by. If None, all species are returned.
+        page (int): The page number to return. Defaults to 1.
+        per_page (int): The number of items to return per page. Defaults to 10.
 
     Returns:
-        tuple: A tuple containing the filtered list of species and the total number of pages.
+        A tuple containing a list of filtered species and the total number of pages.
     """
-    all_species = [
-        "Puma concolor",
-        "Panthera leo",
-        "Elephas maximus",
-        "Gorilla beringei",
-        "Panthera tigris",
-        "Rhinoceros unicornis",
-        "Ailuropoda melanoleuca",
-        "Balaenoptera musculus",
-        "Diceros bicornis",
-        "Panthera onca",
-    ]
+    all_species = fetch_species_list()
     filtered_species = []
     start_index = (page - 1) * per_page
     end_index = start_index + per_page
-
+    
+    # Iterate over the species in the current page
     for species in all_species[start_index:end_index]:
-        species_data = fetch_species_data(species)
+        species_data = fetch_species_data(species['scientific_name'])
         if species_data:
-            if conservation_status is None or species_data[1] == conservation_status:
+            # If the conservation status matches, add it to the filtered list
+            if conservation_status is None or species_data['category'] == conservation_status:
                 filtered_species.append(species_data)
-
+    
+    # Calculate the total number of pages
     total_pages = -(-len(all_species) // per_page)
     return filtered_species, total_pages
 
 
 def create_conservation_status_chart(species_list):
     """
-    Creates a pie chart showing the distribution of conservation statuses from a list of species.
+    Create a pie chart of conservation statuses from the provided list of species.
 
     Args:
-        species_list (list): A list of tuples containing species information, where the second element is the conservation status.
+        species_list (list): A list of species dictionaries as returned by fetch_species_data() or fetch_species_list().
 
     Returns:
-        plotly.graph_objects.Figure: A pie chart showing the distribution of conservation statuses.
+        A Plotly figure object representing a pie chart of conservation status distribution.
     """
+    # Initialize an empty dictionary to store the count of each conservation status
     status_counts = {}
+    
+    # Iterate over the species in the list and count the conservation status of each
     for species in species_list:
-        status = species[1]
+        status = species['category']
         status_counts[status] = status_counts.get(status, 0) + 1
-
-    fig = go.Figure(
-        data=[
-            go.Pie(
-                labels=list(status_counts.keys()), values=list(status_counts.values())
-            )
-        ]
-    )
+    
+    # Create the pie chart figure using the counts
+    fig = go.Figure(data=[go.Pie(labels=list(status_counts.keys()), values=list(status_counts.values()))])
     fig.update_layout(title_text="Conservation Status Distribution")
+    return fig
+
+
+def create_population_trend_chart(species_list):
+    """
+    Create a bar chart of population trends.
+
+    Args:
+        species_list (list): A list of species dictionaries as returned by fetch_species_data() or fetch_species_list().
+
+    Returns:
+        A Plotly figure object representing a bar chart of population trend distribution.
+    """
+    # Initialize an empty dictionary to store the count of each population trend
+    trend_counts = {}
+    
+    # Iterate over the species in the list and count the population trend of each
+    for species in species_list:
+        trend = species['population_trend']
+        trend_counts[trend] = trend_counts.get(trend, 0) + 1
+    
+    # Create the bar chart figure using the counts
+    fig = go.Figure(data=[go.Bar(x=list(trend_counts.keys()), y=list(trend_counts.values()))])
+    fig.update_layout(title_text="Population Trends", xaxis_title="Trend", yaxis_title="Count")
     return fig
 
 
 def interface(species_name, conservation_status, page):
     """
-    Interface function for the Gradio demo.
-
-    This function takes in a species name and conservation status, and returns a formatted output string, a pie chart, and
-    visibility updates for the page navigation buttons.
-
-    If the species name is provided, the function fetches the corresponding species data and formats it into a string.
-    If the species name is not provided, the function filters the list of species by the selected conservation status and
-    returns a formatted list of the filtered species.
+    Interface function for the Gradio app.
 
     Args:
-        species_name (str): The scientific name of the species to fetch data for.
+        species_name (str): The scientific name of a species to fetch data for.
         conservation_status (str): The conservation status to filter by.
-        page (int): The current page number.
+        page (int): The page number of species to return.
 
     Returns:
-        formatted_output (str): A formatted string containing the species data or the filtered list of species.
-        chart (plotly.graph_objects.Figure): A pie chart showing the distribution of conservation statuses.
-        update_prev (gr.Interface.update): An update function for the previous page button.
-        update_next (gr.Interface.update): An update function for the next page button.
+        A tuple containing a formatted string of species data (if species_name is not None),
+        a conservation status distribution chart, a population trend distribution chart,
+        and two Gradio update objects to control the visibility of the charts and the page number input.
     """
     if species_name:
         species_data = fetch_species_data(species_name)
         if species_data:
-            formatted_output = f"**Scientific Name:** {species_data[0]}\n\n**Conservation Status:** {species_data[1]}\n\n**Population Trend:** {species_data[2]}\n\n**Habitat:** {species_data[3]}"
-            chart = create_conservation_status_chart([species_data])
-            return (
-                formatted_output,
-                chart,
-                gr.update(visible=False),
-                gr.update(visible=False),
-            )
+            formatted_output = f"""
+            **Scientific Name:** {species_data['scientific_name']}
+            **Common Name:** {species_data['common_name']}
+            **Conservation Status:** {species_data['category']}
+            **Population Trend:** {species_data['population_trend']}
+            **Habitat:** {species_data['habitat']}
+            **Threats:** {species_data['threats']}
+            **Conservation Measures:** {species_data['conservation_measures']}
+            """
+            status_chart = create_conservation_status_chart([species_data])
+            trend_chart = create_population_trend_chart([species_data])
+            return formatted_output, status_chart, trend_chart, gr.update(visible=False), gr.update(visible=False)
         else:
-            return (
-                "Species not found or error fetching data.",
-                None,
-                gr.update(visible=False),
-                gr.update(visible=False),
-            )
+            return "Species not found or error fetching data.", None, None, gr.update(visible=False), gr.update(visible=False)
     else:
         species_list, total_pages = filter_species_by_status(conservation_status, page)
         if species_list:
-            formatted_list = "\n\n".join(
-                [
-                    f"**Scientific Name:** {s[0]}\n**Conservation Status:** {s[1]}\n**Population Trend:** {s[2]}\n**Habitat:** {s[3]}"
-                    for s in species_list
-                ]
-            )
-            chart = create_conservation_status_chart(species_list)
-            return (
-                formatted_list,
-                chart,
-                gr.update(visible=True),
-                gr.update(visible=True, maximum=total_pages),
-            )
+            formatted_list = "\n\n".join([
+                f"**Scientific Name:** {s['scientific_name']}\n**Common Name:** {s['common_name']}\n**Conservation Status:** {s['category']}\n**Population Trend:** {s['population_trend']}"
+                for s in species_list])
+            status_chart = create_conservation_status_chart(species_list)
+            trend_chart = create_population_trend_chart(species_list)
+            return formatted_list, status_chart, trend_chart, gr.update(visible=True), gr.update(visible=True, maximum=total_pages)
         else:
-            return (
-                "No species found with the selected conservation status.",
-                None,
-                gr.update(visible=False),
-                gr.update(visible=False),
-            )
-
+            return "No species found with the selected conservation status.", None, None, gr.update(visible=False), gr.update(visible=False)
 
 def change_page(direction, current_page):
     """
-    Changes the current page by the given direction (positive for next page, negative for previous page),
-    ensuring the page number is always at least 1.
+    Change the page number by the given direction.
 
     Args:
-        direction (int): The direction to change the page by.
+        direction (int): 1 to go to the next page, -1 to go to the previous page.
         current_page (int): The current page number.
 
     Returns:
         int: The new page number.
     """
     return max(1, current_page + direction)
-
 
 with gr.Blocks() as demo:
     gr.Markdown("# Endangered Species Tracker")
@@ -199,21 +252,15 @@ with gr.Blocks() as demo:
         with gr.Column(scale=1):
             conservation_status_filter = gr.Radio(
                 label="Filter by Conservation Status:",
-                choices=[
-                    "Vulnerable",
-                    "Endangered",
-                    "Critically Endangered",
-                    "Least Concern",
-                    "Not Available",
-                    None,
-                ],
-                value=None,
+                choices=["Vulnerable", "Endangered", "Critically Endangered", "Least Concern", "Not Available", None],
+                value=None
             )
 
     submit_btn = gr.Button("Submit")
     output = gr.Markdown()
-    chart = gr.Plot()
-
+    status_chart = gr.Plot()
+    trend_chart = gr.Plot()
+    
     with gr.Row():
         prev_btn = gr.Button("Previous Page", visible=False)
         page_number = gr.Number(value=1, label="Page", visible=False)
@@ -222,33 +269,33 @@ with gr.Blocks() as demo:
     submit_btn.click(
         interface,
         inputs=[species_input, conservation_status_filter, page_number],
-        outputs=[output, chart, prev_btn, next_btn],
+        outputs=[output, status_chart, trend_chart, prev_btn, next_btn]
     )
 
     prev_btn.click(
         change_page,
         inputs=[gr.Number(value=-1, visible=False), page_number],
-        outputs=page_number,
+        outputs=page_number
     ).then(
         interface,
         inputs=[species_input, conservation_status_filter, page_number],
-        outputs=[output, chart, prev_btn, next_btn],
+        outputs=[output, status_chart, trend_chart, prev_btn, next_btn]
     )
 
     next_btn.click(
         change_page,
         inputs=[gr.Number(value=1, visible=False), page_number],
-        outputs=page_number,
+        outputs=page_number
     ).then(
         interface,
         inputs=[species_input, conservation_status_filter, page_number],
-        outputs=[output, chart, prev_btn, next_btn],
+        outputs=[output, status_chart, trend_chart, prev_btn, next_btn]
     )
 
     page_number.change(
         interface,
         inputs=[species_input, conservation_status_filter, page_number],
-        outputs=[output, chart, prev_btn, next_btn],
+        outputs=[output, status_chart, trend_chart, prev_btn, next_btn]
     )
 
 demo.launch(share=True)
