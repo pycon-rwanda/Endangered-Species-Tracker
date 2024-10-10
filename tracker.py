@@ -14,7 +14,10 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Load API key from environment variables
-IUCN_API_KEY = config("IUCN_API_KEY")
+UCN_API_KEY = config("IUCN_API_KEY", default=None)
+if not UCN_API_KEY:
+    logger.error("IUCN_API_KEY is not set. Please set the API key in the environment variables.")
+    raise ValueError("IUCN_API_KEY is not set")
 
 # IUCN Red List API endpoint
 IUCN_API_URL = "https://apiv3.iucnredlist.org/api/v3/"
@@ -23,6 +26,8 @@ IUCN_API_URL = "https://apiv3.iucnredlist.org/api/v3/"
 @sleep_and_retry
 @limits(calls=10, period=1)  # 10 calls per second
 @lru_cache(maxsize=1000)  # Cache up to 1000 calls
+
+
 def api_call(endpoint, params=None):
     """
     Make an API call to the IUCN Red List API with rate limiting and caching.
@@ -34,13 +39,17 @@ def api_call(endpoint, params=None):
     try:
         url = f"{IUCN_API_URL}{endpoint}"
         params = params or {}
-        params['token'] = IUCN_API_KEY
-        response = requests.get(url, params=params)
+        params['token'] = UCN_API_KEY
+        response = requests.get(url, params=params, timeout=10)  # Added timeout
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
-        logger.error(f"API call failed: {e}")
+        logger.exception(f"API call failed: {e}")  # Changed to logger.exception
         return None
+    except ValueError as e:
+        logger.exception(f"Invalid JSON response: {e}")
+        return None
+
 
 
 def fetch_species_list(page=0):
